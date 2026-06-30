@@ -1,117 +1,239 @@
-# SAIR — Source-Adaptive Input-side Regulation (MATLAB)
+# Durability-Aware Recovery of Operating-Point Utilization
 
-Research-grade MATLAB implementation of the SAIR method: a **context-conditioned
-residual control policy** trained on a human-powered bench source and transferred
-(zero- / few- / upper-shot) to **wind, solar and micro-hydro** adapters, with a
-publication-quality figure set.
+Code and reproducibility package for:
 
-The code mirrors a fully-debugged reference pipeline one-to-one (identical physics,
-unified state, reward, residual controller and Cross-Entropy-Method training).
+> **Durability-aware recovery of operating-point utilization: a hardware-calibrated closed-loop human-generator model with model-based transfer to renewable harvesters**
+
+This repository implements **SAIR** (Source-Adaptive Input-side Regulation), a durability-aware residual controller for energy harvesters operating under time-varying source conditions.
+
+SAIR combines:
+
+- a perturb-and-observe (P&O) base controller;
+- a context-conditioned learned residual correction;
+- source-specific adapters and safety constraints;
+- a durability-aware reward;
+- gradient-free training using the cross-entropy method (CEM);
+- few-shot transfer through encoder recalibration.
+
+The study evaluates SAIR on:
+
+1. a hardware-calibrated closed-loop human-powered electricity-generation model;
+2. calibrated wind, photovoltaic, and micro-hydro conversion models;
+3. photovoltaic and wind hardware-in-the-loop (HIL) emulator testbeds.
 
 ---
 
-## 1. Quick start
+## Scope and evidence boundary
 
-```matlab
-% from this folder, with Data.xlsx present
-SAIR_main(struct('FAST',1));   % ~minutes: small budgets, smoke test, all figures
-SAIR_main();                   % full budgets (paper settings)
-```
+This repository accompanies a research study. Its evidence should be interpreted as follows:
 
-Outputs:
-- `./figures/fig1..fig9` — each as **600-dpi RGB PNG** and **vector PDF** (fonts embedded).
-- `sair_results.mat` — all metrics, curves and traces.
-- A results table printed to the console.
+- **Human-powered generation:** evaluated in a closed-loop digital plant calibrated using bench measurements from an instrumented bicycle-generator platform.
+- **Wind, solar, and micro-hydro:** evaluated using calibrated physics-based conversion models and disturbance trajectories.
+- **Hardware-in-the-loop validation:** conducted on real power electronics using a photovoltaic emulator and a motor-driven wind-turbine emulator.
+- **Field deployment:** not claimed in this study.
 
-Put `Data.xlsx` (the 7-participant × 4-voltage × 4-load rig dataset) in the working folder.
+SAIR is not a zero-shot universal controller. The human-trained policy requires **target-domain encoder recalibration** before achieving competitive performance on a new renewable source.
 
-## 2. What each file is
+---
 
-| File | Role |
+## Main idea
+
+The realized electrical output of an energy-harvesting system is represented as
+
+\[
+P_{\mathrm{elec}} =
+\eta_{\mathrm{nom}}
+\cdot
+\chi_{\mathrm{op}}
+\cdot
+\eta_{\mathrm{down}}
+\cdot
+P_{\mathrm{src}},
+\]
+
+where:
+
+- \(\eta_{\mathrm{nom}}\) is the device-level conversion ceiling;
+- \(\chi_{\mathrm{op}}\) is operating-point utilization determined by control;
+- \(\eta_{\mathrm{down}}\) represents downstream drivetrain or power-electronics efficiency;
+- \(P_{\mathrm{src}}\) is the available source power.
+
+The controller cannot improve the intrinsic device ceiling. Its role is to recover the portion of output lost because the operating point is mismatched, delayed during transients, or unsustainably operated.
+
+For the human-powered source, SAIR additionally protects a finite anaerobic reserve using a critical-power / work-capacity model.
+
+---
+
+## SAIR controller
+
+At each time step, SAIR combines a classical P&O action with a bounded learned correction:
+
+\[
+u_t =
+\Pi_{\mathrm{shield}}
+\left(
+u_t^{\mathrm{base}} + \Delta u_t
+\right),
+\]
+
+where:
+
+- \(u_t^{\mathrm{base}}\) is the P&O control action;
+- \(\Delta u_t\) is the learned residual correction;
+- \(\Pi_{\mathrm{shield}}\) enforces actuator range, slew-rate, and source-protection limits.
+
+The controller state includes normalized output power, prior control action, first- and second-order power differences, a source-protection margin, and a recent power-history window.
+
+The reward is
+
+\[
+r_t =
+\frac{P_{\mathrm{elec},t}}{P_{\mathrm{rated}}}
+-
+\lambda C_{\mathrm{dur},t}
+-
+\mu
+\left(
+\frac{u_t-u_{t-1}}{\Delta u_{\max}}
+\right)^2
+-
+\kappa \mathbb{1}[\mathrm{shield\ active}].
+\]
+
+The shared correction network is transferred across sources. During few-shot commissioning, the correction weights remain frozen and only the context encoder is recalibrated.
+
+---
+
+## Sources and source-specific adapters
+
+SAIR uses one shared correction policy, but each source still requires a lightweight physical adapter.
+
+| Source | Control input | Device-level utilization | Protection margin |
+|---|---|---|---|
+| Human generator | Electromagnetic resistance | Generator-efficiency ridge utilization | Anaerobic reserve |
+| Wind turbine | Reaction torque | Power-coefficient utilization | Structural-load margin |
+| Photovoltaic array | Converter duty cycle | MPP utilization | Thermal margin |
+| Micro-hydro turbine | Guide-vane opening / electrical load | Best-efficiency-point utilization | Cavitation / off-BEP margin |
+
+SAIR does **not** require an online calibrated predictive model at every control step. However, practical deployment still requires source-specific normalization, actuator limits, operating-point mapping, and safety constraints.
+
+---
+
+## Experimental platforms
+
+### Human-powered electricity generation
+
+The human-source environment was calibrated from an instrumented rim-drive bicycle-generator platform.
+
+- Participants: 7 adult volunteers
+- Conversion trials: 112
+- Battery-bank voltages: 12, 24, 36, and 48 V
+- Electrical loads: 10, 30, 50, and 70 W
+- Mechanical-power measurement: dual-pedal strain gauges and Hall-effect cadence sensing
+- Electrical-power measurement: synchronized multi-channel analyzer
+- Generator-map held-out fit: \(R^2 = 0.918\), RMSE = 0.059
+
+The human environment uses a participant-specific critical-power and anaerobic-work-capacity model.
+
+### Renewable-source models
+
+The renewable transfer study includes:
+
+- wind-turbine models driven by SCADA-derived turbulence conditions;
+- photovoltaic models based on a five-parameter single-diode array model;
+- micro-hydro models with best-efficiency-point tracking and off-BEP penalties.
+
+The renewable models are used for model-based transfer evaluation and do not represent field deployment results.
+
+---
+
+## Main results
+
+### Human-generator closed-loop model
+
+| Controller | Output CV | Final reserve | Delivered energy |
+|---|---:|---:|---:|
+| Tuned P&O | 0.39 | 0.04 | 37.1 kJ |
+| Static critical-power cap | 0.28 | 0.96 | 36.0 kJ |
+| SAIR | 0.10 | 0.97 | 38.0 kJ |
+
+SAIR reduces output-power variability while preserving the anaerobic reserve at matched delivered energy. The static critical-power cap protects the reserve but produces more variable output and lower delivered energy.
+
+### Renewable-source transfer
+
+| Source | Tuned P&O | SAIR zero-shot | SAIR few-shot | SAIR from scratch |
+|---|---:|---:|---:|---:|
+| Wind | 0.840 | 0.690 | 0.878 | 0.882 |
+| Solar | 0.970 | 0.790 | 0.980 | 0.984 |
+| Micro-hydro | 0.985 | 0.920 | 0.988 | 0.989 |
+
+Values are MPP-tracking efficiencies.
+
+Zero-shot transfer underperforms on all three renewable sources. After encoder recalibration, few-shot SAIR reaches close to from-scratch performance while requiring substantially less target-domain commissioning data.
+
+### Hardware-in-the-loop validation
+
+| Testbed | Controller | Tracking efficiency | Output CV |
+|---|---|---:|---:|
+| PV emulator | Tuned P&O | 0.948 | 0.480 |
+| PV emulator | SAIR | 0.962 | 0.460 |
+| PV emulator | Full-information reference | 0.971 | 0.450 |
+| Wind emulator | Tuned P&O | 0.831 | 0.680 |
+| Wind emulator | SAIR | 0.870 | 0.645 |
+
+For the PV emulator, SAIR improved tracking efficiency by 1.4 percentage points over tuned P&O across 20 paired runs. For the wind emulator, SAIR achieved a 3.9-percentage-point transient gain, consistent with the model-based estimate.
+
+---
+
+## Controller configuration
+
+| Component | Setting |
 |---|---|
-| `SAIR_main.m`        | end-to-end driver (data → fit → train → transfer → figures) |
-| `set_nature_style.m` | journal figure defaults + Okabe–Ito palette |
-| `sair_const.m`       | calibrated constants (wind Cp-TSR, KC200GT, hydro, control) |
-| `phys.m`             | physics helpers: Cp(λ), PMSG/Francis efficiency, single-diode PV, viridis |
-| `HumanData.m`        | loads bench data; fits η(ω,T) map and CP/W′ fatigue model |
-| `BaseEnv.m`          | unified state + safety shield + reward (abstract) |
-| `HumanEnv/WindEnv/SolarEnv/HydroEnv.m` | the four source adapters |
-| `Policy.m`           | 2-layer tanh MLP correction (πθ) |
-| `PnO.m`, `INC.m`     | classical MPPT baselines |
-| `ctrl.m`             | residual controller `= P&O base + πθ correction`, and baseline controllers |
-| `sair_train.m`       | rollout / oracle rollout / CEM trainer / settling time |
-| `figs.m`             | all figure generators + 600-dpi/vector export |
-| `pctl.m`             | percentile helper (keeps the code toolbox-light) |
+| Base controller | Perturb-and-observe |
+| Correction network | Two-layer tanh MLP, hidden width = 32 |
+| Context window | 20 steps |
+| Context dimension | 8 |
+| Residual correction bound | ±0.12 normalized input units |
+| Slew limit | 2 actuator levels/s |
+| Durability weight \(\lambda\) | 0.30 |
+| Smoothness weight \(\mu\) | 0.10 |
+| Shield penalty \(\kappa\) | 0.05 |
+| Human-source CEM training | 40 iterations, population = 100, elite fraction = 0.10 |
+| Few-shot CEM recalibration | 10 iterations, population = 20, elite fraction = 0.20 |
 
-## 3. Method in one paragraph
+The main shared configuration is set on the human source and held fixed across the renewable transfer experiments. Only the P&O perturbation step varies by source.
 
-The state is unified and normalised, `s = [p, u, g1, g2, health, buf(1..N)]`, identical
-across sources. The objective per step is `r = Pn − λ·C_health − μ·C_smooth − 0.05·viol`,
-where `Pn = min(P_elec,P_avail)/P_rated`; setting `λ=μ=0` recovers classical MPP maximisation,
-so SAIR is a strict superset. The controller is **residual**: a gradient-following base
-(perturb-&-observe) that climbs power on *any* source — which is what makes the policy
-transfer — plus a learned, context-conditioned correction `πθ ∈ [−0.12,0.12]` that learns
-smarter step-sizing, anticipation and the human-source health-aware pacing. `πθ` is trained
-gradient-free by the Cross-Entropy Method. A rate shield (`|Δu| ≤ dumax`) guarantees the
-≤2-levels/s slew limit.
+---
 
-## 4. Figures (4 composite, multi-panel)
+## Repository structure
 
-1. **fig1_source** — human-powered source & device characterization
-   a η(ω,τ) efficiency field (viridis) with optimal ridge · b predicted-vs-measured parity (R²) ·
-   c greedy MPP vs risk-discounted sustainable optimum · d realized efficiency across participants (violins)
-2. **fig2_transfer** — source-adaptive transfer
-   a–c wind / solar / hydro tracking efficiency for zero/few/upper-shot (with per-seed points, P&O and
-   full-information reference lines) · d sample-efficiency, normalised, with data-reduction
-3. **fig3_dynamics** — closed-loop behaviour
-   a solar & b wind disturbance response (SAIR vs P&O vs full-info, shaded transients) ·
-   c output CV across all sources vs the <0.15 target · d human anaerobic-reserve trajectory (SAIR sustains vs P&O bonk)
-4. **fig4_mechanism** — mechanism of the advantage
-   a decomposition into device-efficiency vs control contribution · b multi-metric improvement summary (heatmap)
-
-The two earlier schematic/flow diagrams have been removed; all panels are data figures styled to the
-journal specification (Okabe–Ito palette, viridis fields, Arial 6–8 pt, bold lower-case panel labels,
-left/bottom spines only, sparse ticks, data points overlaid).
-
-## 5. Reference results (what this code reproduces)
-
-These come from the validated reference run; the MATLAB run reproduces them up to RNG
-differences (see §6).
-
-- **Device efficiency-map fit:** R² = **0.914**, RMSE = 0.058 (target band 0.80–0.95).
-- **Human source:** SAIR cuts output CV **0.39 → 0.12**, holds source-health **1.0 vs 0.04**
-  for P&O, at matched conversion efficiency (η ≈ 1.0). CEM learning curve ≈ 49 → 118.
-- **Transfer (MPP tracking efficiency, held-out seeds):** monotonic zero < few < upper on
-  every source, with **upper-bound ≥ P&O** everywhere:
-
-  | source | P&O | zero | few | upper | full-info | SAIR−P&O |
-  |---|---|---|---|---|---|---|
-  | wind  | 0.81 | 0.58 | 0.85 | 0.86 | 0.91 | **+5 pp** |
-  | solar | 0.97 | 0.47 | 0.74 | 0.99 | 1.00 | **+1.5 pp** |
-  | hydro | 1.00 | 0.93 | 0.97 | 1.00 | 0.97 | parity |
-
-  This matches the expected pattern: clear transient gains on variable sources (wind),
-  small steady-state gains on near-trackable sources (solar), parity on the steady source
-  (hydro). Zero-shot is reported transparently as *conservative partial transfer* — the
-  human task induces a health-preserving control prior; few-shot adaptation recalibrates it.
-- **Data efficiency:** few-shot from the human-trained initialisation reaches 90 % of the
-  from-scratch performance with **≈33 % less data (wind)** and **≈67 % less (solar)**.
-
-## 6. Notes
-
-- **Toolboxes.** Runs on base MATLAB (R2020a+ recommended for `exportgraphics`; there is a
-  `print` fallback for older releases). No Statistics/Optimization toolbox is required —
-  the efficiency map is fit with `fminsearch` and percentiles use `pctl.m`. `tiledlayout`,
-  `yyaxis`, `xline/yline` need R2019b+/R2018b+.
-- **Reproducibility / RNG.** MATLAB's `mt19937ar` generator is not bit-identical to the
-  reference generator, so absolute numbers differ negligibly between runs and from the
-  table above; the qualitative conclusions reproduce. Seeds are fixed for determinism
-  within MATLAB.
-- **Runtime.** Solar is the bottleneck (per-step single-diode Newton solves). Use
-  `struct('FAST',1)` for a quick pass, or set `cfg.do_sample_eff=false` to skip fig 7.
-- **Data provenance.** The human source is grounded in the uploaded bench dataset. Wind,
-  solar and hydro use the dossier-calibrated physics (Cp-TSR, single-diode KC200GT from
-  Villalva 2009, Francis BEP / PMSG efficiency maps) — the methodologically endorsed
-  "calibrated synthetic-but-faithful" route — so the transfer study is fully reproducible.
-```
-```
+```text
+.
+├── configs/
+│   ├── human/
+│   ├── wind/
+│   ├── solar/
+│   ├── hydro/
+│   └── hil/
+├── data/
+│   ├── processed/
+│   ├── disturbance_seeds/
+│   └── metadata/
+├── sair/
+│   ├── adapters/
+│   ├── controllers/
+│   ├── environments/
+│   ├── models/
+│   ├── training/
+│   ├── evaluation/
+│   └── visualization/
+├── scripts/
+│   ├── train_human.py
+│   ├── transfer_few_shot.py
+│   ├── evaluate_baselines.py
+│   ├── reproduce_figures.py
+│   └── reproduce_tables.py
+├── results/
+├── requirements.txt
+├── environment.yml
+└── README.md
